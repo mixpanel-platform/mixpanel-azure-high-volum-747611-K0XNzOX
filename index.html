@@ -5,11 +5,290 @@
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/css/reset.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.css">
     <script src="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.js"></script>
+    <script src="https://cdn.datatables.net/1.10.9/js/jquery.dataTables.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.10.9/css/jquery.dataTables.min.css">
+    <style>
+      #run {
+        margin-top:5px;
+        float:left;
+        clear:both;
+        padding: 6px 12px;
+        background-color: #61adf0;
+        background-image: -webkit-linear-gradient(#6ab5f2,#53a0ee);
+        background-image: linear-gradient(#6ab5f2,#53a0ee);
+        box-shadow: inset 0 1px 1px #77bdf4,0 2px 2px -1px rgba(0,0,0,0.2);
+        text-transform: uppercase;
+        border: 1px solid #4d93d7;
+        color: #fff;
+        text-shadow: 0 -1px 0 rgba(0,0,0,0.2);
+        border-radius: 3px;
+        cursor: pointer;
+        font-weight: bold;
+      }
+    </style>
   </head>
   <body class="mixpanel-platform-body">
-    <h1>Hello, World!</h1>
+    <div class="mixpanel-platform-section">
+      <div id="dateRange" style="float: left;"></div>
+      <button id="run" value="Run">Run</button>
+      <div style="clear:both"></div>
+    </div>
+    <table id="table" class="display" width="100%"></table>
     <script>
-      // Run queries and display results here
+    
+      /*  
+      ToDo
+        Add force cache button
+        Never Cache Today's Date
+        Graph Data based on the column selected
+        Refactor the get/cache
+        UI Loading timer
+      */
+    
+      /*  Sort including ',' */
+     function naturalSort (a, b) {
+        aLower = suffix(a.split(' - ')[0].replace(/,/g,''));
+        bLower = suffix(b.split(' - ')[0].replace(/,/g,''));
+        return aLower - bLower;
+      }
+      
+      
+      /*  Flat Keys for obj to Sort */
+      function obj2array(json_data){
+        var result = [];
+        _.each(_.keys(json_data), function(key) {
+          result.push(key);
+        });
+        return result;
+      }
+      
+      /*  Reverse our Suffix */
+      function suffix(numberString){
+        length = numberString.length;
+        lastChar = numberString[length - 1]
+        number = Number(numberString.slice(0, length - 1))
+        switch (lastChar) {
+          case 'K':
+            value = number * 1000
+            break;
+          case 'B':
+            value = number * 1000000000
+            break;
+          case 'M':
+            value = number * 1000000
+            break;
+          default:
+            value = Number(numberString)
+            break;
+        } 
+        return value
+      }
+      
+      
+      /*  Structure Data for Post */
+      set = function(data, distinct) {
+        update = {
+          "$set": data,
+        }
+        send(update, distinct);
+      }
+      
+      /*  Post Cache */
+      send = function(update, distinct) {
+        token = "5e1e1a9c5b3420a5700f9daa06c94c16"
+        $.extend(update, {
+          "$token": token,
+          "$distinct_id": distinct
+        })
+        var proto = document.location.protocol;
+        var setUrl = proto + "//api.mixpanel.com/engage";
+        var payload = { 'data': btoa(JSON.stringify(update)), "ip": 0, "verbose": 1 };
+        console.log('set', payload)
+        setXHR = new XMLHttpRequest();
+        setXHR.open("POST", setUrl, true);
+        setXHR.send($.param(payload))
+      }
+      
+      /*  Get Cache */
+      get = function(distinct) {
+        return MP.api.query('/api/2.0/engage', {'distinct_id': distinct})
+      }
+      
+      var eventSelector = $('#eventSelect').MPEventSelect({limit: 500});
+      var dateSelector = $('#dateRange').MPDatepicker();
+      var eventName, dates;
+      
+     
+      /*  Nested queries
+          Will request until buckets are 1 unit wide
+      */
+      nestedQuery = function (percentile, parameters, event, part) {
+        result[date][part][percentile] = result[part][percentile] || {count: 0};
+        var endpoint = 'https://mixpanel.com/api/2.0/segmentation/numeric';
+        MP.api.query(endpoint, parameters).done(function(Data){
+          var queryData = result[date][part][percentile]
+          queryData.total = queryData.total || MP.Data.inst(Data.data.values).sum().sum().values();
+          var tempParams = parameters
+          var queryBuckets = MP.Data.inst(Data.data.values).sum().values();
+          var queryList = obj2array(queryBuckets).sort(naturalSort);
+          
+          for (index in queryList) {
+            var queryBucket = queryList[index];
+            var counts = queryBuckets[queryBucket]
+            if ((queryData['count'] + counts) / queryData['total'] >= percentile) {
+              break;
+            }
+            queryData['count'] += queryBuckets[queryBucket];
+          }
+          /*  Edge Case where buckets fail because of silly rounding */
+          try {
+            var queryBounds = queryBucket.replace(/,/g,'').split(' - ');
+            queryBounds = queryBounds.map(suffix)
+          }
+          catch(err){
+            console.log('No Numeric Data found')
+            console.log(part)
+            queryBounds = [0]
+          }
+
+          tableData[part] = tableData[part] || {}
+          
+          if (queryBounds.length == 1) {
+            queryData.value = (Number(queryBounds[0]) == Number(queryBounds[0])) ? Number(queryBounds) : queryBounds[0]
+            tableData[part][percentile] = queryData.value
+            pending -= 1;
+            console.log(pending);
+            if (pending <= 0) {
+              drawTable(tableData);
+            }
+          } else {
+            var propertyStr = '(string(properties["Context_Part_bladeId"]) == "' + part + '") and ' 
+            var lowerBound = '(number(properties["Duration"]) >= ' + queryBounds[0];
+            var upperBound = ' and number(properties["Duration"]) <=' + queryBounds[1]+ ')';
+            tempParams.where = propertyStr + lowerBound + upperBound;
+            nestedQuery(percentile, tempParams, event, part);
+          }
+        }).fail(function($xhr) {
+          console.log('error with request', $xhr);
+          pending -= 1;
+          if (pending <= 0){
+            drawTable(tableData)
+          }
+        });
+      }
+      
+      /*  Draw Table Function 
+          Expects to be keys of the current values
+      */
+      
+      // Need to set table params to update
+      
+      drawTable= function(data){
+        var rows = []
+        for (part in data) {
+          var extension = part.split('/')[1] || 'N/A'
+          var blade = part.split('/')[3] || 'N/A'
+          for(index in datesArray){
+            debugger
+            var date = datesArray[index]
+            rows.push({
+              'Blade': blade,
+              'Extension': extension,
+              'Median Percentile': data[part]['0.5/' + date ],
+              '95th Percentile': data[part]['0.95/' + date],
+            })
+          }
+        }
+        var table = $('#table').DataTable();
+        table.clear()
+        table.rows.add(rows).draw();
+      }
+      
+       $('#table').DataTable({
+        columns: [
+          {title: 'Blade', data: 'Blade'},
+          {title: 'Extension', data: 'Extension'},
+          {title: 'Median Percentile', data: 'Median Percentile'},
+          {title: '95th Percentile', data: '95th Percentile'},
+        ]
+      })
+      
+      
+      /*  Initial Query Logic */
+      var runQuery = function(){
+        var forceCache = false
+        var params = {}
+        tableData = {}
+        var bladePromises = []
+        pending = 0;
+        var table = $('#table').DataTable();
+        table
+          .clear()
+          .draw();
+          
+        var endpoint = 'https://mixpanel.com/api/2.0/segmentation/numeric'
+        /* Really lazy awful way to get all the combinations
+          Would be dynamic in a live project
+        */
+        var bladeList ='Extension/HubsExtension/Blade/InternalBrowseResourceBlade,Extension/Microsoft_Azure_Compute/Blade/VirtualMachineAttachNewDiskBlade,Extension/Microsoft_Azure_Batch/Blade/TaskDetailsBlade,Extension/AppInsightsExtension/Blade/AspNetOverview,Extension/Microsoft_Azure_Network/Blade/LoadBalancerBlade,Extension/Microsoft_Azure_Storage/Blade/ContainersBladeWithoutMonitoring,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartXamarinIOSBlade,Extension/Microsoft_Azure_Security/Blade/AntimalwareSummaryBlade,Extension/AzureTfsExtension/Blade/DeploymentsBlade,Extension/HubsExtension/Blade/SubscriptionTagsListBlade,Extension/WebsitesExtension/Blade/ExistingWebsitesPickerBlade,Extension/Microsoft_Azure_Insights/Blade/MetricsDetailsBlade,Extension/Microsoft_Azure_DataLake/Blade/CaboAccountHomeBlade,Extension/WebsitesExtension/Blade/ApplicationMonitoringBlade,Extension/AzureCacheExtension/Blade/CacheBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/CreateVirtualMachineBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/PickLoadBalancedSetBlade,Extension/Microsoft_Azure_Microservices/Blade/GatewayIdentitySettingListBlade,Extension/Microsoft_Azure_HDInsight/Blade/PricingParentBlade,Extension/Microsoft_Azure_Search/Blade/SelectFunctionTypeBlade,Extension/Microsoft_Azure_Network/Blade/PublicIpAddressBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/CreateVirtualMachineEndpoint,Extension/Microsoft_Azure_MobileServices/Blade/MobileServiceSettings,Extension/AzureTfsExtension/Blade/AccountDetailsBlade,Extension/Microsoft_Azure_PIM/Blade/AlertsListBlade,Extension/Microsoft_Azure_Automation/Blade/WebhookViewEditBlade,Extension/Microsoft_Azure_DataFactory/Blade/GatewaySummaryBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/AvailabilitySetPickerBlade,Extension/SqlAzureExtension/Blade/DatabaseImportFormBlade,Extension/WebsitesExtension/Blade/CreateWebHostingPlanBladeExtension/Microsoft_Azure_Compute/Blade/VirtualMachineAttachNewDiskBlade,Extension/Microsoft_Azure_Batch/Blade/TaskDetailsBlade,Extension/AppInsightsExtension/Blade/AspNetOverview,Extension/Microsoft_Azure_Network/Blade/LoadBalancerBlade,Extension/Microsoft_Azure_Storage/Blade/ContainersBladeWithoutMonitoring,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartXamarinIOSBlade,Extension/Microsoft_Azure_Security/Blade/AntimalwareSummaryBlade,Extension/AzureTfsExtension/Blade/DeploymentsBlade,Extension/HubsExtension/Blade/SubscriptionTagsListBlade,Extension/WebsitesExtension/Blade/ExistingWebsitesPickerBlade,Extension/Microsoft_Azure_Insights/Blade/MetricsDetailsBlade,Extension/Microsoft_Azure_DataLake/Blade/CaboAccountHomeBlade,Extension/WebsitesExtension/Blade/ApplicationMonitoringBlade,Extension/AzureCacheExtension/Blade/CacheBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/CreateVirtualMachineBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/PickLoadBalancedSetBlade,Extension/Microsoft_Azure_Microservices/Blade/GatewayIdentitySettingListBlade,Extension/Microsoft_Azure_HDInsight/Blade/PricingParentBlade,Extension/Microsoft_Azure_Search/Blade/SelectFunctionTypeBlade,Extension/Microsoft_Azure_Network/Blade/PublicIpAddressBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/CreateVirtualMachineEndpoint,Extension/Microsoft_Azure_MobileServices/Blade/MobileServiceSettings,Extension/WebsitesExtension/Blade/WebsiteConfigBringYourOwnDomainsBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerBackendPoolsAvailabilitySetBlade,Extension/Microsoft_Azure_ServiceFabric/Blade/ConfigureVMBlade,Extension/Microsoft_Azure_Network/Blade/NetworkSecurityGroupBlade,Extension/Microsoft_Azure_Kona/Blade/CreateAccountWizardBlade,Extension/BizTalkExtension/Blade/CreateBizTalkService,Extension/Microsoft_Azure_Classic_Network/Blade/VpnConnectionsBlade,Extension/SqlAzureExtension/Blade/ServiceTierSpecPickerRecommendationBlade,Extension/Microsoft_Azure_B2B/Blade/EdifactAgreementDetailsBlade,Extension/SqlAzureExtension/Blade/AuditingSetupBlade,Extension/HubsExtension/Blade/BrowseInstanceLinkBlade,Extension/Microsoft_Azure_Compute/Blade/AvailabilitySetPicker,Extension/Microsoft_Azure_Security/Blade/CreateWafWizardBlade,Extension/SqlAzureExtension/Blade/AuditingPropertiesBlade,Extension/BizTalkExtension/Blade/BizTalkServicePicker,Extension/Microsoft_Azure_Automation/Blade/ActivityParameterConfigurationBlade,Extension/Microsoft_Azure_DataFactory/Blade/PipelinesListBlade,Extension/SqlAzureExtension/Blade/CreateDataWarehouseBlade,Extension/Microsoft_Azure_HDInsight/Blade/NetworkPickerBlade,Extension/Microsoft_Azure_DataFactory/Blade/DataStoreSummaryBlade,Extension/Microsoft_Azure_DataLake/Blade/DataBrowserTreeBlade,Extension/Microsoft_Azure_Compute/Blade/CreateSettingsBlade,Extension/Microsoft_Azure_DataFactory/Blade/FloorplanBlade,Extension/NewRelic_AzurePortal_APM/Blade/ApplicationBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/ClassicStorageAccountSettingsBlade,Extension/HubsExtension/Blade/ResourcesWithTagBlade,Extension/Microsoft_Azure_DataFactory/Blade/LinkedServicesListBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/IpAddressBlade,Extension/Microsoft_Azure_CloudServices/Blade/CertificatesBlade,Extension/Microsoft_Azure_NotificationHubs/Blade/NewNotificationHubBlade,Extension/Microsoft_Azure_EMA/Blade/WorkflowBlade,Extension/Microsoft_Azure_Search/Blade/IndexersBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkPointToSiteBlade,Extension/Microsoft_Azure_Automation/Blade/VariablesBlade,Extension/AppInsightsExtension/Blade/EndUserAnalyticsBlade,Extension/WebsitesExtension/Blade/ASEBlade,Extension/Microsoft_Azure_PIM/Blade/BatchConfigurationBlade,Extension/Microsoft_Azure_Batch/Blade/JobSettingsBlade,Extension/AppInsightsExtension/Blade/MetricsExplorerBlade,Extension/Microsoft_Azure_B2B/Blade/CreateAgreementBlade,Extension/Microsoft_Azure_PIM/Blade/RoleSelectionBlade,Extension/SqlAzureExtension/Blade/ElasticDatabaseJobSetupBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/Clusters_Hortonworks,Extension/SqlAzureExtension/Blade/TdeSettingsBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/SigniantFlightManageBlade,Extension/Microsoft_Azure_Compute/Blade/GeneratedWizardPageBlade,Extension/BizTalkExtension/Blade/CreatePortBridgeEndpoint,Extension/WebsitesExtension/Blade/PurchasedDomainConfirmationAndLegalBlade,Extension/Microsoft_Azure_Billing/Blade/CreditSubscriptionDetailBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/JoinLoadBalancedSetBlade,Extension/Microsoft_Azure_Network/Blade/NetworkSecurityGroupSettingsBlade,Extension/AzureTfsExtension/Blade/AccountDetailsAllSettingsBlade,Extension/SendGrid_EmailService/Blade/SendgridBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SQLAlwaysOn_CreateSQLAlwaysOnBlade,Extension/AzureTfsExtension/Blade/ProjectBlade,Extension/WebsitesExtension/Blade/WebsiteSettingsBlade,Extension/Microsoft_Azure_Compute/Blade/AvailabilitySetBlade,Extension/Microsoft_Azure_HDInsight/Blade/MetaStoreConfigurationBlade,Extension/Microsoft_Azure_HDInsight/Blade/AdditionalStoragePickerBlade,Extension/Microsoft_Azure_Automation/Blade/AccountAllSettingsBlade,Extension/Microsoft_Azure_Classic_Network/Blade/ReservedIPAddressSettingsBlade,Extension/Microsoft_Azure_DataIntegration/Blade/CreateGatewayWizard,Extension/Microsoft_Azure_ServiceFabric/Blade/PropertiesUpgradeDescriptionBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/CreateAppServicePrePurchaseBlade,Extension/Microsoft_Azure_Billing/Blade/SupportSubscriptionDetailBlade,Extension/HubsExtension/Blade/DeployFromTemplateBlade,Extension/WebsitesExtension/Blade/AppServiceEnvironmentVNETSelectionBlade,Extension/WebsitesExtension/Blade/WebsiteConfigPurchaseDomainsBlade,Extension/Microsoft_Azure_DataFactory/Blade/CreateGatewayWizard,Extension/Microsoft_Azure_Insights/Blade/ScaleSettingBlade,Extension/Microsoft_Azure_AD/Blade/SelectDirectoryMember,Extension/Microsoft_Azure_Microservices/Blade/GatewayDetailsBlade,Extension/Microsoft_Azure_Batch/Blade/PoolDetailsBlade,Extension/Microsoft_Azure_Automation/Blade/AddWebhookBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/ResourceExtensionsConfigBlade,Extension/Microsoft_Azure_DevTestLab/Blade/NewLabTemplateBlade,Extension/Microsoft_Azure_B2B/Blade/EditX12SendSettingsBlade,Extension/Microsoft_Azure_Automation/Blade/RunbookJobsBlade,Extension/Microsoft_Azure_DataFactory/Blade/PipelineArtifactsProducedBlade,Extension/HubsExtension/Blade/InternalBrowseResourceGroupBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AlertDetailsBlade,Extension/SqlAzureExtension/Blade/DatabaseMigrationHintBlade,Extension/WebsitesExtension/Blade/ContinuousDeploymentDetailsBlade,Extension/WebsitesExtension/Blade/CreateWebsiteAndMySqlWizardBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/CreatePolicyFormBlade,Extension/Microsoft_Azure_Classic_Network/Blade/ReservedIPAddressBlade,Extension/Microsoft_Azure_Billing/Blade/ConsumptionSubscriptionDetailBlade,Extension/BizTalkExtension/Blade/PortBridgeEndpointPicker,Extension/Microsoft_Azure_EAI/Blade/ConnectorMultipleSecurityBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkSettingsBlade,Extension/Microsoft_Azure_Security/Blade/TasksBlade,Extension/Microsoft_Azure_Network/Blade/NetworkSecurityGroupCreateBlade,Extension/SqlAzureExtension/Blade/CreateDatabaseBlade,Extension/SqlAzureExtension/Blade/DatabaseBlade,Extension/Microsoft_Azure_ServiceFabric/Blade/CreateClusterBlade,Extension/Microsoft_Azure_B2B/Blade/ProfileSummaryBlade,Extension/Microsoft_Azure_Billing/Blade/CommitmentSubscriptionDetailBlade,Extension/Microsoft_Azure_EAI/Blade/ConfigureTransformBlade,Extension/SqlAzureExtension/Blade/CreateElasticPoolBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/CreateClassicStorageAccountBlade,Extension/SqlAzureExtension/Blade/DatabaseIndexBlade,Extension/AppInsightsExtension/Blade/EditWebTestBlade,Extension/Microsoft_Azure_Billing/Blade/AzureInOpenSubscriptionDetailBlade,Extension/SqlAzureExtension/Blade/DatabaseExportFormBlade,Extension/Microsoft_Azure_DataFactory/Blade/DataArtifactsDetailsBlade,Extension/Microsoft_Azure_EAI/Blade/HDInsightConnectorBlade,Extension/Microsoft_Azure_Security/Blade/MonitoringBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerRulesEditBlade,Extension/Microsoft_Azure_Classic_Network/Blade/ReservedIPAddressPickerBlade,Extension/Microsoft_Azure_Network/Blade/PublicIpAddressPicker,Extension/Microsoft_Azure_B2B/Blade/X12AgreementDetailsBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/ResourceExtensionPropertiesBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/VirtualMachineSettingsBlade,Extension/WebsitesExtension/Blade/BackupBlade,Extension/HubsExtension/Blade/TourBlade,Extension/Microsoft_Azure_NotificationHubs/Blade/NotificationHubServices,Extension/Microsoft_Azure_CloudServices/Blade/UploadPackageBlade,Extension/Microsoft_Azure_EAI/Blade/AddVocabularyBulkBlade,Extension/Microsoft_Azure_Classic_Network/Blade/NewVPNConnectionBlade,Extension/WebsitesExtension/Blade/CreateWordPressWizardBlade,Extension/AppInsightsExtension/Blade/QuickStartBlade,Extension/Microsoft_Azure_Compute/Blade/DiagnosticsConfigurationUpdateBlade,Extension/Microsoft_Azure_EAI/Blade/JsonToXsdWizardBlade,Extension/Microsoft_Azure_Kona/Blade/KonaAccountSettingListBlade,Extension/Microsoft_Azure_Kona/Blade/KonaAccountSampleJobsBlade,Extension/WebsitesExtension/Blade/SetupContinuousDeploymentBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/TrendMicroDeepSecurityManageBlade,Extension/Microsoft_Azure_Batch/Blade/BatchAccountJobsBlade,Extension/WebsitesExtension/Blade/ProcessDetailsBlade,Extension/SqlAzureExtension/Blade/DWQueryDetailsBlade,Extension/Microsoft_Azure_Storage/Blade/StorageAccountCreate,Extension/Microsoft_Azure_Compute/Blade/BasicsFormBlade,Extension/Microsoft_Azure_Network/Blade/CreateTrafficManagerBlade,Extension/Microsoft_Azure_DataLake/Blade/WebHdfsCustomAccessPropertiesBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/PricingTierPickerBlade,Extension/Microsoft_Azure_Search/Blade/ImportData,Extension/Microsoft_Azure_EAI/Blade/SchemaAddingOptionsBlade,Extension/Microsoft_Azure_DocumentDB/Blade/DocumentExplorerBlade,Extension/Microsoft_Azure_Scheduler/Blade/CreateJobBlade,Extension/Microsoft_Azure_EMA/Blade/EditWorkflowBlade,Extension/Microsoft_Azure_Billing/Blade/NoDaysLeftSubscriptionDetailBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/ClassicVirtualMachineOSSettingsBlade,Extension/Microsoft_Azure_Automation/Blade/AddAzureVmsBlade,Extension/AppInsightsExtension/Blade/JavaWebOverview,Extension/SqlAzureExtension/Blade/ServerDatabasesListBlade,Extension/Microsoft_Dynamics_LCS/Blade/CreateSolutionBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/TenantManagementBlade,Extension/SqlAzureExtension/Blade/CreateServerBlade,Extension/SqlAzureExtension/Blade/ElasticPoolBlade,Extension/SqlAzureExtension/Blade/DatabaseGeoDrBrowseBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/ClassicVirtualMachineOptionalConfigBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/LocalSignUpPageProviderBlade,Extension/Microsoft_Azure_Network/Blade/CreateVirtualNetworkBlade,Extension/Microsoft_AAD_CloudAppDiscovery/Blade/OnboardingBlade,Extension/Microsoft_Azure_Search/Blade/SearchServiceBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/StorageBlobPickerBlade,Extension/Microsoft_Azure_DocumentDB/Blade/QueryExplorer,Extension/Microsoft_Azure_PIM/Blade/RoleSettingsListBlade,Extension/Microsoft_Azure_CloudServices/Blade/RolesBlade,Extension/WebsitesExtension/Blade/WebsiteSlotsPickerBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkCreateBlade,Extension/AppInsightsExtension/Blade/SearchResultTraceDetailBlade,Extension/Microsoft_Azure_Kona/Blade/KonaAccountHomeBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/EditPolicyFormBlade,Extension/AzureCacheExtension/Blade/CreateCacheWizardBlade,Extension/Microsoft_Azure_Automation/Blade/RunbookDashboardBlade,Extension/Microsoft_Azure_Compute/Blade/CreateMultiVmBasicsFormBlade,Extension/Microsoft_Azure_DataLake/Blade/CaboAccountSettingListBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/PageCustomizationProviderBlade,Extension/Microsoft_Azure_Compute/Blade/AvailabilitySetSettingsBlade,Extension/Microsoft_AAD_ERM/Blade/AccessReviewsSummaryBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkSubnetManagementBlade,Extension/Microsoft_Azure_AD/Blade/RolePermissionsBlade,Extension/Microsoft_Azure_HDInsight/Blade/HDInsightHomeBlade,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartXamarinFormsBlade,Extension/Microsoft_Azure_PIM/Blade/FirstTimeUserRolesBlade,Extension/SqlAzureExtension/Blade/ServerSettingsBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerBackendPoolsCreateBlade,Extension/Microsoft_Azure_Network/Blade/AddSubnetBlade,Extension/Microsoft_Azure_Batch/Blade/CreateBatchAccountBlade,Extension/Microsoft_Azure_Insights/Blade/ScaleRuleBlade,Extension/Microsoft_Azure_Compute/Blade/CreateVMWizardBlade,Extension/Microsoft_Azure_EMA/Blade/WorkflowTriggerHistoryBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerInboundNatRulesAvailabilitySetBlade,Extension/Microsoft_Azure_EAI/Blade/CreateVocabularyStepBlade,Extension/Microsoft_Azure_Support/Blade/HelpAndSupportBlade,Extension/HubsExtension/Blade/InternalBrowseAllResourcesBlade,Extension/Microsoft_Azure_MobileServices/Blade/MobileServiceBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/MyCloudITManageBlade,Extension/Microsoft_Azure_DevTestLab/Blade/CreateApplicationBlade,Extension/Microsoft_Azure_PIM/Blade/FirstTimeConfigurationBlade,Extension/Microsoft_Azure_DataLake/Blade/WebHdfsFolderBlade,Extension/Microsoft_Azure_DataFactory/Blade/SamplePipelinesGalleryBlade,Extension/Microsoft_Azure_EAI/Blade/ConfigureFFEncodeDecodeBlade,Extension/SqlAzureExtension/Blade/DatabaseCopyFormBlade,Extension/Microsoft_Azure_EAI/Blade/VocabularySchemaPickerBlade,Extension/Microsoft_Azure_DataIntegration/Blade/LinkedServicesListBlade,Extension/SqlAzureExtension/Blade/AuditingServerBlade,Extension/Microsoft_Dynamics_LCS/Blade/CreateDeploymentBladeV3,Extension/Microsoft_Azure_EAI/Blade/AddNewVocabularyBlade,Extension/AppInsightsExtension/Blade/CreateContinuousExportBlade,Extension/Microsoft_Azure_Network/Blade/NetworkInterfaceBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/Clusters_Cloudera_WorkerConfig,Extension/Microsoft_AAD_ProtectionCenter/Blade/ActivityReportsBlade,Extension/Microsoft_Azure_Storage/Blade/BlobsBlade,Extension/AppInsightsExtension/Blade/CreateApplicationBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/BlobsBlade,Extension/Microsoft_Azure_Automation/Blade/SchedulesBlade,Extension/Microsoft_Azure_EMA/Blade/WorkflowRunBlade,Extension/Microsoft_Azure_Storage/Blade/BlobSettingsBlade,Extension/Microsoft_Azure_CloudServices/Blade/VMSettingsBlade,Extension/SqlAzureExtension/Blade/OpenInVisualStudioBlade,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartIOSSwiftBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/VirtualMachineDisksBlade,Extension/Microsoft_Azure_Automation/Blade/JobStreamsBlade,Extension/AzureTfsExtension/Blade/RepositoryInformationBlade,Extension/AppInsightsExtension/Blade/CreateWebTestBlade,Extension/Microsoft_Azure_Network/Blade/NetworkInterfaceSettingsBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AdfsServerHealthBlade,Extension/AppInsightsExtension/Blade/ContinuousExportEditBlade,Extension/Microsoft_Azure_Batch/Blade/BatchAccountSettingsBlade,Extension/Microsoft_AAD_CloudAppDiscovery/Blade/DataCollectionsSettingsBlade,Extension/SqlAzureExtension/Blade/ServerBlade,Extension/AzureTfsExtension/Blade/ChangeListHistoryBlade,Extension/Microsoft_Azure_AD/Blade/RoleMembersBlade,Extension/Microsoft_Azure_MobileServices/Blade/CreateNotificationHub,Extension/Microsoft_Azure_Classic_Compute/Blade/Clusters_Hortonworks_WorkerConfiguration,Extension/Microsoft_Azure_Billing/Blade/CreditSubscriptionDetailDeprecatedBlade,Extension/Microsoft_Azure_DataFactory/Blade/RunDetailsBlade,Extension/ClearDBExtension/Blade/ClearDBBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerInboundNatRulesEditBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AdfsHealthBlade,Extension/Microsoft_Azure_Automation/Blade/AccountPickerBlade,Extension/Microsoft_Azure_DevTestLab/Blade/ImageBlade,Extension/Microsoft_Azure_HDInsight/Blade/CreateClusterWizardBlade,Extension/Microsoft_Azure_Network/Blade/OutboundSecurityRulesBlade,Extension/Microsoft_Azure_EAI/Blade/RulesListBlade,Extension/Microsoft_Azure_Support/Blade/ContactPreferencesBlade,Extension/Microsoft_Azure_EAI/Blade/SQLHybridConnectorBlade,Extension/WebsitesExtension/Blade/ASESettingsBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkSiteToSiteBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/NewLoadBalancedSetBlade,Extension/Microsoft_Azure_DataFactory/Blade/ViewFactoryBlade,Extension/WebsitesExtension/Blade/WebsiteConfigSSLSettings,Extension/AppInsightsExtension/Blade/OtherOverview,Extension/HubsExtension/Blade/BrowseResourceBlade,Extension/Microsoft_Azure_Automation/Blade/UnlinkedSchedulePickerBlade,Extension/Microsoft_Azure_Automation/Blade/ScheduleRunbookBlade,Extension/WebsitesExtension/Blade/ZendZRayBlade,Extension/SqlAzureExtension/Blade/DataWarehouseSettingsBlade,Extension/Microsoft_Azure_EAI/Blade/XPathPickerBlade,Extension/Microsoft_Azure_Network/Blade/PublicIpAddressSettingsBlade,Extension/Microsoft_Azure_Insights/Blade/NotificationActionBlade,Extension/WebsitesExtension/Blade/ASESettingsBrowseAppsBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AadSyncServerHealthBlade,Extension/Microsoft_Azure_Storage/Blade/QueuesBlade,Extension/Microsoft_Azure_EAI/Blade/ConfigureJsonEncodeDecodeBlade,Extension/WebsitesExtension/Blade/RestoreSettingsBlade,Extension/Microsoft_Azure_B2B/Blade/AgreementsListingBlade,Extension/Microsoft_Azure_Microservices/Blade/CreateMicroserviceSettingsBlade,Extension/Microsoft_Azure_Storage/Blade/StorageAccountBlade,Extension/WebsitesExtension/Blade/CreateBlade,Extension/Microsoft_Azure_Security/Blade/CreateWafStep1Blade,Extension/Microsoft_Azure_DocumentDB/Blade/DatabaseAccountBlade,Extension/Microsoft_Azure_Automation/Blade/RunbookAllSettingsBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerProbesEditBlade,Extension/Microsoft_Azure_Search/Blade/KeysBlade,Extension/Microsoft_Azure_B2B/Blade/PartnerSummaryBlade,Extension/Microsoft_Azure_B2B/Blade/EdifactMicroServiceHomeBlade,Extension/Microsoft_Azure_PIM/Blade/ManagementBlade,Extension/SqlAzureExtension/Blade/ServerSelectionBlade,Extension/Microsoft_Azure_DataLake/Blade/CreateAccountWizardBlade,Extension/Microsoft_AAD_ProtectionCenter/Blade/IdentitySecurityDashboardBlade,Extension/WebsitesExtension/Blade/NetworkSummaryBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/StorageServicePicker,Extension/WebsitesExtension/Blade/AddSiteExtensionWizardBlade,Extension/Microsoft_Azure_ServiceFabric/Blade/ServiceFabricClusterBlade,Extension/Microsoft_Azure_PIM/Blade/UserRolesListBlade,Extension/AzureTfsExtension/Blade/CreateProjectBlade,Extension/AzureTfsExtension/Blade/PurchaseLicenseBlade,Extension/SqlAzureExtension/Blade/DatabaseSelectionBlade,Extension/Microsoft_Azure_EAI/Blade/EditVocabularyBlade,Extension/Microsoft_Azure_Microservices/Blade/CreateMicroserviceBlade,Extension/Microsoft_Azure_DataFactory/Blade/CreateDataFactoryV3Blade,Extension/AppInsightsExtension/Blade/SearchResultExceptionDetailBlade,Extension/Microsoft_Azure_DataFactory/Blade/FactorySettingListBlade,Extension/Microsoft_Azure_Batch/Blade/JobDetailsBlade,Extension/WebsitesExtension/Blade/WebsiteSlotsListBlade,Extension/Microsoft_Azure_Marketplace/Blade/GalleryItemDetailsBlade,Extension/Microsoft_Azure_DocumentDB/Blade/CreateDatabaseAccountBlade,Extension/Microsoft_Azure_Microservices/Blade/MicroserviceDetailsBlade,Extension/AppInsightsExtension/Blade/Usage,Extension/Microsoft_Azure_DocumentDB/Blade/ScriptExplorerBlade,Extension/Microsoft_Azure_Security/Blade/ResourcesBlade,Extension/Microsoft_Azure_Batch/Blade/TaskSettingsBlade,Extension/Microsoft_Azure_Security/Blade/BaselineSummaryBlade,Extension/Microsoft_Azure_NotificationHubs/Blade/CreateNotificationHubBlade,Extension/AppInsightsExtension/Blade/SearchBlade,Extension/AzureTfsExtension/Blade/LoadTestAccountSelectorBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SharePoint_SharePointServersBlade,Extension/Microsoft_Azure_EAI/Blade/SharePointHybridConnectorBlade,Extension/AppInsightsExtension/Blade/SearchResultPageViewDetailBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/ClassicStorageAccountBlade,Extension/HubsExtension/Blade/BrowseResourceblade,Extension/Microsoft_Azure_DataFactory/Blade/DataSlicesBySliceBoundaryBlade,Extension/Microsoft_Azure_Automation/Blade/AllJobsBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SpecPickerV3,Extension/HubsExtension/Blade/ResourceGroupPickerBlade,Extension/AzureTfsExtension/Blade/AccountSelectorAndCreator,Extension/Microsoft_Azure_Storage/Blade/StorageContainerPicker,Extension/Microsoft_Azure_Storage/Blade/ContainersBlade,Extension/Microsoft_Azure_Classic_Network/Blade/AddSubnetBlade,Extension/Microsoft_Azure_MobileServices/Blade/MobileServicePropertiesBlade,Extension/Microsoft_Azure_Insights/Blade/DiagnosticsConfigurationBlade,Extension/SqlAzureExtension/Blade/DatabaseRestoreFormBlade,Extension/Microsoft_Azure_B2B/Blade/AS2MicroServiceHomeBlade,Extension/SqlAzureExtension/Blade/ElasticPoolGeneralSettingsBlade,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartHTMLBlade,Extension/Microsoft_Azure_Billing/Blade/ConsumptionSubscriptionDetailDeprecatedBlade,Extension/Microsoft_Azure_EAI/Blade/OracleDBHybridConnectorBlade,Extension/Microsoft_Azure_CloudServices/Blade/CreateBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/AddIdpFormBlade,Extension/Microsoft_Azure_DataFactory/Blade/NewDataStoreBlade,Extension/SqlAzureExtension/Blade/DatabaseIndexBladeV2,Extension/WebsitesExtension/Blade/WebHostingPlanPickerBlade,Extension/HubsExtension/Blade/SubscriptionPickerBlade,Extension/Microsoft_Azure_B2B/Blade/EDIAgreementReceiveSettingsBlade,Extension/Microsoft_Azure_DevTestLab/Blade/SettingListBlade,Extension/HubsExtension/Blade/LegalTermsBlade,Extension/Microsoft_Azure_EMA/Blade/WorkflowAllRunsBlade,Extension/AppInsightsExtension/Blade/EventManagementBlade,Extension/Microsoft_Azure_Batch/Blade/NodeSettingsBlade,Extension/HubsExtension/Blade/ServicesHealthBlade,Extension/Microsoft_Azure_DataFactory/Blade/ViewDataSliceBlade,Extension/HubsExtension/Blade/BrowseRecentResourcesBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerRulesCreateBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkAddressSpaceManagementBlade,Extension/Microsoft_Azure_EAI/Blade/RulesMainBlade,Extension/Microsoft_Azure_ServiceFabric/Blade/PropertiesBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/IdpGrid,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartIOSObjectCBlade,Extension/Microsoft_Azure_CloudServices/Blade/SummaryBlade,Extension/AppInsightsExtension/Blade/FavoritesBlade,Extension/Microsoft_Azure_B2B/Blade/AddProfileBlade,Extension/WebsitesExtension/Blade/AppServiceEnvironmentScaleBlade,Extension/Microsoft_Azure_Support/Blade/SupportRequestDetailBlade,Extension/Microsoft_Azure_Automation/Blade/RunbookScheduleViewEditBlade,Extension/AzureTfsExtension/Blade/AccountPickerBlade,Extension/Microsoft_Azure_Automation/Blade/ActivityParameterConfigurationWithParameterSetsBlade,Extension/WebsitesExtension/Blade/CreateASPBlade,Extension/Microsoft_Azure_MobileServices/Blade/QuickStart,Extension/Microsoft_Azure_NotificationHubs/Blade/NotificationHubPickerBlade,Extension/SqlAzureExtension/Blade/DatabaseSettingsBlade,Extension/Microsoft_Azure_Automation/Blade/CredentialsBlade,Extension/AppInsightsExtension/Blade/SearchResultDependencyDetailBlade,Extension/Microsoft_Azure_Storage/Blade/StorageAccountPickerCreate,Extension/MicrosoftAzureClassicStorageExtension/Blade/ClassicStorageAccountBlade_Premium,Extension/Microsoft_Azure_B2B/Blade/TpmMicroServiceHomeBlade,Extension/Microsoft_Azure_EMA/Blade/WorkflowActionBlade,Extension/Microsoft_Azure_DataIntegration/Blade/GatewaySummaryBlade,Extension/Microsoft_Azure_SqlVM/Blade/SQLAutoBackupConfiguration,Extension/Microsoft_Azure_ServiceFabric/Blade/SingleApplicationDetailBlade,Extension/Microsoft_Azure_Security/Blade/SecurityDashboardStartBlade,Extension/Microsoft_Azure_EAI/Blade/SAPHybridConnectorBlade,Extension/Microsoft_Azure_Automation/Blade/AddRunbookSelectorBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AadSyncHealthBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/DomainNamePickerBlade,Extension/Microsoft_Azure_MobileServices/Blade/WebSettingsBlade,Extension/Microsoft_Azure_PIM/Blade/AddUserToRoleWizard,Extension/SendGrid_EmailService/Blade/SettingListBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkSiteToSitePropertiesBlade,Extension/Microsoft_Azure_Automation/Blade/AssetsBlade,Extension/Microsoft_Azure_Support/Blade/DescriptionBlade,Extension/Microsoft_Azure_DataFactory/Blade/PipelineArtifactsConsumedBlade,Extension/Microsoft_Azure_CloudServices/Blade/SettingsBlade,Extension/Microsoft_Azure_Search/Blade/DataSourceList,Extension/HubsExtension/Blade/DeploymentDetailsBlade,Extension/Microsoft_Azure_DataFactory/Blade/DataSlicesByStatusUpdateBlade,Extension/Microsoft_AAD_CloudAppDiscovery/Blade/SettingsListBlade,Extension/Microsoft_Dynamics_LCS/Blade/ProjectSummaryBlade,Extension/AzureTfsExtension/Blade/BuildDetailsBlade,Extension/Microsoft_Azure_Network/Blade/VirtualNetworkSubnetsBlade,Extension/Microsoft_Azure_Search/Blade/DataSourcePicker,Extension/AppInsightsExtension/Blade/SettingListBlade,Extension/WebsitesExtension/Blade/PortaBridgeItemDetailsBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkPickerBlade,Extension/AppInsightsExtension/Blade/SearchResultRequestDetailBlade,Extension/Microsoft_Azure_Scheduler/Blade/JobCollectionBlade,Extension/Microsoft_Azure_DocumentDB/Blade/SettingsBlade,Extension/Microsoft_Azure_Search/Blade/CreateBladeV3,Extension/Microsoft_Azure_PIM/Blade/FirstTimeWelcomeBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/ContainerBlobsBlade,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartWindowsCSBlade,Extension/AzureTfsExtension/Blade/LoadTestResultsBlade,Extension/Microsoft_Azure_DataFactory/Blade/LinkedServicePropertiesEditorBlade,Extension/Microsoft_Azure_AD/Blade/AddUserToRoleWizard,Extension/HubsExtension/Blade/ResourceGroupMapBlade,Extension/AppInsightsExtension/Blade/WebTestDetailBlade,Extension/Microsoft_Azure_PIM/Blade/AlertsSettingsBlade,Extension/Microsoft_Azure_EAI/Blade/HDInsightSecurityBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SharePoint_OptionalConfigurationBlade,Extension/NewRelic_AzurePortal_APM/Blade/CreateAccountStep1Blade,Extension/Microsoft_Azure_Support/Blade/HelpRequestBlade,Extension/Microsoft_Azure_Kona/Blade/SqlIpJobDetailsBlade,Extension/Microsoft_Azure_Automation/Blade/NewGalleryAccountBlade,Extension/AzureTfsExtension/Blade/CreateLoadTestBlade,Extension/Microsoft_Azure_Compute/Blade/VirtualMachineAvailabilitySetBlade,Extension/SqlAzureExtension/Blade/CreateReplicationFormBlade,Extension/Microsoft_Azure_Kona/Blade/SqlIpJobEditorBlade,Extension/AppInsightsExtension/Blade/WebTestAssetBlade,Extension/Microsoft_Azure_Search/Blade/IndexerBlade,Extension/Microsoft_Azure_Automation/Blade/TextualAuthoringWorkspaceBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerProbesBlade,Extension/Microsoft_Azure_B2B/Blade/X12AgreementReceiveSettingsBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/AppServiceManageBlade,Extension/Microsoft_Azure_MobileServices/Blade/DataBlade,Extension/Microsoft_Azure_Search/Blade/IndexerPropertiesBlade,Extension/Microsoft_Azure_DocumentDB/Blade/AddCollectionBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AdfsServerListBlade,Extension/Microsoft_Azure_Microservices/Blade/MicroserviceSettingsBlade,Extension/HubsExtension/Blade/MapResourceGroupBlade,Extension/SqlAzureExtension/Blade/EsaMoveServerBlade,Extension/Microsoft_Azure_B2B/Blade/X12MicroServiceHomeBlade,Extension/AzureTfsExtension/Blade/BuildResultsBlade,Extension/SqlAzureExtension/Blade/EsaMigrateServerSettingsBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SharePoint_SqlServersBlade,Extension/WebsitesExtension/Blade/WebsitePickerBlade,Extension/HubsExtension/Blade/GalleryCreateBlade,Extension/Microsoft_Azure_EAI/Blade/FileHybridConnectorBlade,Extension/Microsoft_Azure_Classic_Network/Blade/VirtualNetworkBlade,Extension/Microsoft_Azure_EAI/Blade/FlatFileToXsdStartBlade,Extension/Microsoft_Azure_Network/Blade/TrafficManagerBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/ResourceExtensionsBlade,Extension/Microsoft_Azure_Search/Blade/ScoringProfileBlade,Extension/Microsoft_Azure_Marketplace/Blade/GalleryCreateBlade,Extension/Microsoft_Azure_DataFactory/Blade/DataArtifactsListBlade,Extension/Microsoft_Azure_Insights/Blade/AlertsListBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/DomainJoinBlade,Extension/HubsExtension/Blade/LegalTermsSkuProgrammaticAccessBlade,Extension/Microsoft_Azure_Network/Blade/VirtualNetworkBlade,Extension/Microsoft_Azure_DocumentDB/Blade/CollectionBlade,Extension/WebsitesExtension/Blade/WebHostingPlanBlade,Extension/Microsoft_Azure_Search/Blade/IndexBlade,Extension/WebsitesExtension/Blade/SlotSwapBlade,Extension/WebsitesExtension/Blade/ToolsBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/PolicyGrid,Extension/WebsitesExtension/Blade/CreateWebsiteAndSqlWizardBlade,Extension/Microsoft_Azure_Automation/Blade/SourceControlIntegrationSetupWizardBlade,Extension/Microsoft_Azure_Storage/Blade/ContainerBlobsBlade,Extension/HubsExtension/Blade/ResourceGroupSettingListBlade,Extension/Microsoft_Azure_NotificationHubs/Blade/NotificationHubBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/SocialSignUpPageProviderBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/VirtualMachineSqlVMBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SQLAlwaysOn_SqlServerConfigurationBlade,Extension/HubsExtension/Blade/GalleryFeaturedMenuItemBlade,Extension/Microsoft_Azure_DataLake/Blade/WebHdfsAccessBlade,Extension/Microsoft_Azure_Automation/Blade/RunbooksBlade,Extension/AppInsightsExtension/Blade/WebTestLocationDetailBlade,Extension/HubsExtension/Blade/GalleryCreateMenuResultsListBlade,Extension/WebsitesExtension/Blade/TinfoilSecurityBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerBackendPoolsBlade,Extension/Microsoft_Azure_Support/Blade/ResourceBlade,Extension/HubsExtension/Blade/TourBladesBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/Clusters_Cloudera,Extension/Microsoft_Azure_Storage/Blade/StorageAccountBlade_Premium,Extension/AzureTfsExtension/Blade/SetupDeploymentWizardBlade,Extension/HubsExtension/Blade/BrowseAllResourcesBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/UserAttributeGrid,Extension/Microsoft_Azure_Billing/Blade/BillingSummaryBlade,Extension/Microsoft_Azure_Batch/Blade/NodeDetailsBlade,Extension/Microsoft_Azure_Automation/Blade/JobDashboardBlade,Extension/Microsoft_Azure_DocumentDB/Blade/keyPropertiesBlade,Extension/Microsoft_Azure_AD/Blade/UserAssignmentsBlade,Extension/Microsoft_Azure_PIM/Blade/RoleSelectionRolesOnlyBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/LoadBalancedSetBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/StorageAccountPickerBlade,Extension/ClearDBExtension/Blade/SettingList,Extension/SqlAzureExtension/Blade/IncludedDatabasesBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerInboundNatRulesCreateBlade,Extension/HubsExtension/Blade/BrowseResourceGroupBlade,Extension/Microsoft_Azure_B2B/Blade/AS2AgreementDetailsBlade,Extension/WebsitesExtension/Blade/WebsiteBlade,Extension/NewRelic_AzurePortal_APM/Blade/InstanceBlade,Extension/SendGrid_EmailService/Blade/EmailServiceBlade,Extension/HubsExtension/Blade/ArmExplorerBlade,Extension/Microsoft_Azure_HDInsight/Blade/OptionalConfigurationBlade,Extension/Microsoft_Azure_Marketplace/Blade/GalleryCreateMenuResultsListBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/ClassicStorageAccountPremiumSettingsBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SharePoint_CreateSharePointBlade,Extension/Microsoft_AAD_B2CAdmin/Blade/AppGrid,Extension/Microsoft_Azure_B2B/Blade/EDIAgreementSendSettingsBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/VirtualMachineBlade,Extension/Microsoft_Azure_Automation/Blade/NewGalleryRunbookBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SQLAlwaysOn_OptionalConfigurationBlade,Extension/Microsoft_Azure_NotificationHubs/Blade/NotificationHubSettings,Extension/HubsExtension/Blade/GalleryResultsListBlade,Extension/WebsitesExtension/Blade/CreateAppHostingEnvironmentWizardBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/SharePoint_DomainControllersBlade,Extension/Microsoft_Azure_Storage/Blade/StorageAccountSettingsBlade,Extension/Microsoft_Azure_Compute/Blade/VirtualMachineBlade,Extension/Microsoft_Azure_Insights/Blade/ActionDetailsBlade,Extension/Microsoft_Azure_Compute/Blade/VirtualMachineDisksBlade,Extension/SqlAzureExtension/Blade/AuditingStorageBlade,Extension/AzureCacheExtension/Blade/CacheSettingsBlade,Extension/Microsoft_Azure_EAI/Blade/SftpConnectorBlade,Extension/WebsitesExtension/Blade/VirtualNetworkPickerBlade,Extension/Microsoft_Azure_Storage/Blade/StorageAccountPicker,Extension/WebsitesExtension/Blade/WebsitePortBridgeListBlade,Extension/Microsoft_Azure_Security/Blade/PatchSummaryBlade,Extension/WebsitesExtension/Blade/CreateWebsiteWizardBlade,Extension/Microsoft_Azure_HDInsight/Blade/SettingsBlade,Extension/Microsoft_Azure_CloudServices/Blade/RoleBlade,Extension/Microsoft_Azure_Automation/Blade/GraphRunbookInputAndOutputBlade,Extension/AppInsightsExtension/Blade/SearchResultDetailBlade,Extension/Microsoft_Azure_Automation/Blade/GraphicalAuthoringWorkspaceBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/AttachDiskBlade,Extension/Microsoft_Azure_MobileServices/Blade/QuickStartXamarinAndroidBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerRulesBlade,Extension/Microsoft_Azure_Batch/Blade/PoolSettingsBlade,Extension/Microsoft_Azure_EMA/Blade/CreateWorkflowBlade,Extension/Microsoft_Azure_Insights/Blade/AzureDiagnosticsBladeWithParameter,Extension/AzureTfsExtension/Blade/SourceExplorer,Extension/HubsExtension/Blade/GalleryMenuBlade,Extension/Microsoft_Azure_DocumentDB/Blade/DatabaseBlade,Extension/Microsoft_Azure_Compute/Blade/VirtualMachineSettingsBlade,Extension/AppInsightsExtension/Blade/ContinuousExportBlade,Extension/Microsoft_Azure_Automation/Blade/ConnectionsBlade,Extension/AppInsightsExtension/Blade/DeviceOverview,Extension/Microsoft_Azure_SqlVM/Blade/SQLAutoPatchingConfiguration,Extension/Microsoft_Azure_Scheduler/Blade/JobBlade,Extension/Microsoft_Azure_EMA/Blade/CreateWorkflowDesignerBlade,Extension/WebsitesExtension/Blade/AppServicePlanPickerBladeV3,Extension/Microsoft_Azure_Network/Blade/VirtualNetworkPicker,Extension/Microsoft_Azure_DataIntegration/Blade/NewDataStoreBlade,Extension/Microsoft_Azure_Kona/Blade/DataBrowserTreeBlade,Extension/WebsitesExtension/Blade/ProcessExplorerBlade,Extension/SqlAzureExtension/Blade/DWQueriesCollectionBlade,Extension/AppInsightsExtension/Blade/WebTestsBlade,Extension/WebsitesExtension/Blade/RestoreDatabasesBlade,Extension/Microsoft_Azure_Search/Blade/AddIndex,Extension/Microsoft_Azure_Batch/Blade/BatchAccountHomeBlade,Extension/Microsoft_Azure_Insights/Blade/DiagnosticsConfigurationUpdateBlade,Extension/HubsExtension/Blade/DeploymentsListBlade,Extension/SqlAzureExtension/Blade/DatabaseIndexUpgradeInfoBalde,Extension/Microsoft_Azure_Kona/Blade/AddDataSourceBlade,Extension/ClearDBExtension/Blade/ClearDBDatabasePicker,Extension/Microsoft_Azure_Automation/Blade/AccountDashboardBlade,Extension/Microsoft_Azure_Network/Blade/InboundSecurityRulesBlade,Extension/Microsoft_Azure_B2B/Blade/AgreementPartnerSettingsBlade,Extension/Microsoft_Azure_EMA/Blade/WorkflowSettingsBlade,Extension/Microsoft_Azure_Automation/Blade/ModuleDashboardBlade,Extension/Microsoft_Azure_Automation/Blade/RunbookSchedulesBlade,Extension/Microsoft_Azure_Scheduler/Blade/CreateJobScheduleBlade,Extension/Microsoft_Azure_Classic_Network/Blade/GatewayConfigurationBlade,Extension/Microsoft_Azure_Network/Blade/NetworkSecurityGroupPickerBlade,Extension/Microsoft_AAD_CloudAppDiscovery/Blade/ApplicationDetailsBlade,Extension/AzureTfsExtension/Blade/ChangeListBlade,Extension/Microsoft_Azure_Marketplace/Blade/LegalTermsSkuProgrammaticAccessBlade,Extension/SqlAzureExtension/Blade/DataMaskingBlade,Extension/WebsitesExtension/Blade/SubnetPickerBlade,Extension/Microsoft_Azure_AD/Blade/RolesListBlade,Extension/Microsoft_Azure_Insights/Blade/ApplicationProviderConfigurationBlade,Extension/Microsoft_Azure_MarketplaceApps/Blade/AppServiceSettingsBlade,Extension/Microsoft_Azure_DevTestLab/Blade/NewLabVmBlade,Extension/Microsoft_Azure_EAI/Blade/PolicyListBlade,Extension/Microsoft_Azure_Automation/Blade/NewAccountBlade,Extension/Microsoft_Azure_AD/Blade/RolesAssignedToUserBlade,Extension/WebsitesExtension/Blade/WebsiteConfigSiteSettings,Extension/Microsoft_Azure_Storage/Blade/TablesBlade,Extension/Microsoft_Azure_DataLake/Blade/WebHdfsAddAccessEntryBlade,Extension/Microsoft_Azure_DataFactory/Blade/ADFEditorTreeBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/HybridHealthBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerBackendPoolsEditBlade,Extension/HubsExtension/Blade/GalleryItemDetailsBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/VirtualMachineNetworkBlade,Extension/Microsoft_Azure_Storage/Blade/StorageAccountBlade_ZRS,Extension/Microsoft_Azure_MarketplaceApps/Blade/BingMapsManageBlade,Extension/SqlAzureExtension/Blade/DatabaseServiceTierAdvisorBladeFromHints,Extension/Microsoft_Azure_PIM/Blade/FirstTimeSettingsBlade,Extension/Microsoft_Azure_Search/Blade/SettingsBlade,Extension/AppInsightsExtension/Blade/SearchResultCustomEventDetailBlade,Extension/WebsitesExtension/Blade/SiteExtensionsListBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/StorageContainerPickerBlade,Extension/WebsitesExtension/Blade/ASESettingsPropertiesBlade,Extension/Microsoft_Azure_DataFactory/Blade/ActivityDetailsBlade,Extension/Microsoft_Azure_Network/Blade/NetworkInterfaceIpAddressesBlade,Extension/Microsoft_Azure_DataFactory/Blade/GatewayPickerBlade,Extension/Microsoft_Azure_MobileServices/Blade/CreateGateway,Extension/Microsoft_Azure_Billing/Blade/OtherSubscriptionDetailBlade,Extension/AzureTfsExtension/Blade/BuildDefinitionHistoryBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerSettingsBlade,Extension/Microsoft_Azure_ServiceFabric/Blade/ConfigureClusterBlade,Extension/AzureTfsExtension/Blade/SolutionCompiledBlade,Extension/Microsoft_Azure_HDInsight/Blade/StorageAccountPickerBlade,Extension/Microsoft_Azure_Kona/Blade/WebsiteAnalysisWizardBlade,Extension/WebsitesExtension/Blade/ContinuousDeploymentListBlade,Extension/Microsoft_AAD_ERM/Blade/AddAccessReviewWizardBlade,Extension/Microsoft_Azure_DevTestLab/Blade/DevTestLabBlade,Extension/Microsoft_Azure_ADHybridHealth/Blade/AdfsServicesListBlade,Extension/NewRelic_AzurePortal_APM/Blade/AccountSettingListBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/ContainersBlade,Extension/Microsoft_Azure_Classic_Network/Blade/AddressSpacePickerBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerIpAddressBlade,Extension/Microsoft_Azure_AD/Blade/RoleMemberAssignmentPropertiesBlade,Extension/Microsoft_Azure_Network/Blade/VirtualNetworkSettingsBlade,Extension/Microsoft_Azure_Microservices/Blade/GatewaySettingsBlade,Extension/Microsoft_Azure_Compute/Blade/CreateMultiVmWizardBlade,Extension/Microsoft_AAD_CloudAppDiscovery/Blade/DashboardBlade,Extension/Microsoft_Azure_Marketplace/Blade/GalleryFeaturedMenuItemBlade,Extension/WebsitesExtension/Blade/WebsiteRoutingRulesBlade,Extension/MicrosoftAzureClassicStorageExtension/Blade/ClassicStorageAccountBlade_ZRS,Extension/SqlAzureExtension/Blade/WebsiteCreateDatabaseBlade,Extension/ClearDBExtension/Blade/CreateClearDBDatabaseWizard,Extension/HubsExtension/Blade/ResourceGroupEventsBlade,Extension/Microsoft_Azure_PIM/Blade/SearchAndCollectUsersBlade,Extension/Microsoft_Azure_Network/Blade/TrafficManagerSettingsBlade,Extension/AzureTfsExtension/Blade/AccountDetailsBlade,Extension/Microsoft_Azure_PIM/Blade/AlertsListBlade,Extension/Microsoft_Azure_Automation/Blade/WebhookViewEditBlade,Extension/Microsoft_Azure_DataFactory/Blade/GatewaySummaryBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/AvailabilitySetPickerBlade,Extension/SqlAzureExtension/Blade/DatabaseImportFormBlade,Extension/WebsitesExtension/Blade/CreateWebHostingPlanBlade,Extension/Microsoft_Azure_DataFactory/Blade/PipelineDetailsBlade,Extension/Microsoft_Azure_DataFactory/Blade/TablesWithErrorListBlade,Extension/NewRelic_AzurePortal_APM/Blade/AccountBlade,Extension/Microsoft_Azure_Classic_Compute/Blade/VirtualMachineEndpoints,Extension/Microsoft_Azure_Network/Blade/SubnetAssociateBlade,Extension/Microsoft_Azure_Insights/Blade/AzureDiagnosticsBlade,Extension/Microsoft_Azure_Billing/Blade/BillingSubscriptionsBrowseBlade,Extension/SqlAzureExtension/Blade/DataWarehouseBlade,Extension/HubsExtension/Blade/CreateEmptyResourceGroupBlade,Extension/Microsoft_Azure_EAI/Blade/ConfigureValidateBlade,Extension/Microsoft_Azure_Kona/Blade/JobGroupedHistoryBlade,Extension/Microsoft_Azure_Network/Blade/LoadBalancerInboundNatRulesBlade,Extension/WebsitesExtension/Blade/ASESettingsBrowsePlansBlade,Extension/SqlAzureExtension/Blade/AuditingConfigureBlade,Extension/SqlAzureExtension/Blade/JobDetailsBlade,Extension/Microsoft_Azure_B2B/Blade/X12AgreementSendSettingsBlade,Extension/AppInsightsExtension/Blade/MetricsExplorerEditBlade'.split(',')
+         
+        var percentiles = [.5, .95]
+        result = {}
+        
+        /*           Not checking people cache
+        for (index in bladeList) {
+          var blade = bladeList[index]
+          bladePromises.push(get(blade)); 
+        }
+        */
+
+        MP.api.MAX_SIMULTANEOUS_QUERIES = bladeList.length * percentiles.length
+        Promise.all(bladePromises).then(function(promiseArray){
+          for (index in bladeList) {
+            var myDate = new Date(dates.from)
+            var blade = bladeList[index]
+            
+            /* Not caching Currently
+            var bladeObj = promiseArray[index]
+            results = bladeObj.results[0]
+            if (!$.isEmptyObject(results)) {
+              tableData[blade] = results.$properties
+            }
+            */
+            
+            var part = blade
+            params[part] = {}
+            result[part] = result[part] || {};
+            
+            for (percentIndex in percentiles){
+              percent = percentiles[percentIndex]
+              var propertyStr = '(string(properties["Context_Part_bladeId"]) == "' + part + '")'
+              params[part][percent] = {
+                event: 'BladeReady',
+                where: propertyStr,
+                from: new Date(dates.from),
+                to: new Date(dates.to),
+                on: 'number(properties["Duration"])',
+                unit: 'day',
+                buckets: 2,
+                allow_more_buckets:false,
+              };
+              var eventKey = String(percent + ' ' + part)
+              pending += 1;
+              nestedQuery(percent, params[part][percent], event,  part);
+              myDate.setDate(myDate.getDate() + 1);
+            }
+          }
+          if (pending <= 0) {
+            drawTable(tableData)
+          }
+        });
+      }
+      
+      $('#run').on('click', function(e){
+        dates = $('#dateRange').val();
+        runQuery();
+      });
     </script>
   </body>
 </html>
