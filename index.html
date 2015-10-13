@@ -126,7 +126,7 @@
         result[part][percentile] = result[part][percentile] || {count: 0};
         var endpoint = 'https://mixpanel.com/api/2.0/segmentation/numeric';
         MP.api.query(endpoint, parameters).done(function(Data){
-          var queryData = result[date][part][percentile]
+          var queryData = result[part][percentile]
           queryData.total = queryData.total || MP.Data.inst(Data.data.values).sum().sum().values();
           var tempParams = parameters
           var queryBuckets = MP.Data.inst(Data.data.values).sum().values();
@@ -188,15 +188,12 @@
         for (part in data) {
           var extension = part.split('/')[1] || 'N/A'
           var blade = part.split('/')[3] || 'N/A'
-          for(index in datesArray){
-            debugger
-            var date = datesArray[index]
-            rows.push({
-              'Blade': blade,
-              'Extension': extension,
-              'Median Percentile': data[part]['0.5/' + date ],
-              '95th Percentile': data[part]['0.95/' + date],
-            })
+          rows.push({
+            'Blade': blade,
+            'Extension': extension,
+            'Median Percentile': data[part]['0.5'],
+            '95th Percentile': data[part]['0.95'],
+          })
           }
         }
         var table = $('#table').DataTable();
@@ -245,7 +242,7 @@
         MP.api.MAX_SIMULTANEOUS_QUERIES = bladeList.length * percentiles.length
         Promise.all(bladePromises).then(function(promiseArray){
           for (index in bladeList) {
-            var myDate = new Date(dates.from)
+
             var blade = bladeList[index]
             
             /* Not caching Currently
@@ -276,7 +273,6 @@
               var eventKey = String(percent + ' ' + part)
               pending += 1;
               nestedQuery(percent, params[part][percent], event,  part);
-              myDate.setDate(myDate.getDate() + 1);
             }
           }
           if (pending <= 0) {
