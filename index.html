@@ -117,7 +117,7 @@
       
       /*  Post Cache */
       send = function(update, distinct) {
-        token = "5e1e1a9c5b3420a5700f9daa06c94c16"
+        token = "a2578edda5beebbe9674b4fcee5f2325"
         $.extend(update, {
           "$token": token,
           "$distinct_id": distinct
@@ -180,6 +180,10 @@
             tableData[part][percentile] = queryData.value
             pending -= 1;
             console.log(pending);
+            var sendData = {}
+            sendData[percentile] = queryData.value;
+            // Commented out to not cache currently
+            set(sendData, part)
             if (pending <= 0) {
               drawTable(tableData);
             }
@@ -256,26 +260,27 @@
         var percentiles = [.5, .95]
         result = {}
         
-        /*           Not checking people cache
         for (index in bladeList) {
+          var tmpApi = MP.api.apiKey
+          var tmpSecret = MP.api.apiSecret
+          MP.api.apikey('18a9b125fbd8ca8dfe7a4e282b309c15')
+          MP.api.apiSecret('9fac9f10ed6545471f6841ed563ddab7')
           var blade = bladeList[index]
           bladePromises.push(get(blade)); 
         }
-        */
+        MP.api.apiKey(tmpApi)
+        MP.api.apiSecret(tmpSecret)
 
         MP.api.MAX_SIMULTANEOUS_QUERIES = 100
         Promise.all(bladePromises).then(function(promiseArray){
           for (index in bladeList) {
-
-            var blade = bladeList[index]
             
-            /* Not caching Currently
+            var blade = bladeList[index]
             var bladeObj = promiseArray[index]
             results = bladeObj.results[0]
             if (!$.isEmptyObject(results)) {
               tableData[blade] = results.$properties
             }
-            */
             
             var part = blade
             params[part] = {}
