@@ -263,7 +263,7 @@
         }
         */
 
-        MP.api.MAX_SIMULTANEOUS_QUERIES = 2
+        MP.api.MAX_SIMULTANEOUS_QUERIES = 100
         Promise.all(bladePromises).then(function(promiseArray){
           for (index in bladeList) {
 
