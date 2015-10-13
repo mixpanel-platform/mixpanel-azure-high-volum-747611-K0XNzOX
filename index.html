@@ -123,7 +123,7 @@
           Will request until buckets are 1 unit wide
       */
       nestedQuery = function (percentile, parameters, event, part) {
-        result[date][part][percentile] = result[part][percentile] || {count: 0};
+        result[part][percentile] = result[part][percentile] || {count: 0};
         var endpoint = 'https://mixpanel.com/api/2.0/segmentation/numeric';
         MP.api.query(endpoint, parameters).done(function(Data){
           var queryData = result[date][part][percentile]
