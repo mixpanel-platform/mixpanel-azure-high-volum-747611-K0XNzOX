@@ -238,7 +238,7 @@
         }
         */
 
-        MP.api.MAX_SIMULTANEOUS_QUERIES = bladeList.length * percentiles.length
+        MP.api.MAX_SIMULTANEOUS_QUERIES = 50
         Promise.all(bladePromises).then(function(promiseArray){
           for (index in bladeList) {
 
