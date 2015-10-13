@@ -37,6 +37,7 @@
     </div>
     <table id="table" class="display" width="100%"></table>
     <script>
+    
     var opts = {
         lines: 17, // The number of lines to draw
         length: 0, // The length of each line
@@ -56,6 +57,7 @@
         left: '75%' // Left position relative to parent
       };
     var target = document.getElementById('selection');
+    var spinner = new Spinner(opts);
       /*  
       ToDo
         Add force cache button
@@ -233,7 +235,8 @@
       
       /*  Initial Query Logic */
       var runQuery = function(){
-        spinner = new Spinner(opts).spin(target); 
+       
+        spinner.spin(target)
         var forceCache = false
         var params = {}
         tableData = {}
