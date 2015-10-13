@@ -263,7 +263,7 @@
         }
         */
 
-        MP.api.MAX_SIMULTANEOUS_QUERIES = 50
+        MP.api.MAX_SIMULTANEOUS_QUERIES = 2
         Promise.all(bladePromises).then(function(promiseArray){
           for (index in bladeList) {
 
@@ -290,7 +290,7 @@
                 from: new Date(dates.from),
                 to: new Date(dates.to),
                 on: 'number(properties["Duration"])',
-                interval: 30,
+                unit: 'month',
                 buckets: 2,
                 allow_more_buckets:false,
               };
